@@ -1,0 +1,30 @@
+# Local configuration and credentials
+config/eval.json
+config/*.local.json
+
+# Generated evaluation output and release artifacts
+runs/
+api_logs/
+dist/
+
+# Python environments, caches, and coverage output
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Tool, editor, and operating-system files
+.DS_Store
+*.tmp
+*.swp
+.idea/
+.vscode/

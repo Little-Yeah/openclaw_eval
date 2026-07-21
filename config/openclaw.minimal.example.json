@@ -1,0 +1,32 @@
+{
+  "gateway": {
+    "bind": "loopback",
+    "port": 18789
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/tmp/openclaw-eval/default-workspace"
+    },
+    "list": []
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "minimax": {
+        "baseUrl": "http://127.0.0.1:18080/anthropic",
+        "apiKey": "proxy-managed-placeholder",
+        "api": "anthropic-messages",
+        "models": [
+          {
+            "id": "MiniMax-M3",
+            "name": "MiniMax-M3",
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "defaultProvider": "minimax",
+  "defaultModel": "MiniMax-M3"
+}
