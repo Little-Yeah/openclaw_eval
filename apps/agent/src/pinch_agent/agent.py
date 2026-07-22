@@ -101,12 +101,14 @@ class RoutedAgent:
             "router_latency_ms": route.router_latency_ms,
         }
         if self.on_event is not None:
+            profile_name = self.router.models[route.selected_label].execution_profile
+            executed_model = self.router.config.execution_profiles[profile_name].model_name
             self.on_event(route_event)
             self.on_event({
                 "event": "model_call_started",
                 "step": state["step"],
                 "routed_label": route.selected_label,
-                "executed_model": "MiniMax-M3",
+                "executed_model": executed_model,
             })
         execution = self.router.execute_selected(route, trace)
         action = _action(execution.content)

@@ -15,6 +15,8 @@ from pinch_router.engine import CheckpointRouter
 
 from .models import CreateRunRequest
 
+DEFAULT_CANDIDATE_LABELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
+
 
 class RunService:
     def __init__(self, root: Path, router: CheckpointRouter) -> None:
@@ -81,7 +83,7 @@ class RunService:
                 self.router,
                 workspace,
                 max_steps=request.max_steps,
-                candidate_labels=request.candidate_labels,
+                candidate_labels=request.candidate_labels or DEFAULT_CANDIDATE_LABELS,
                 preference=request.preference,
                 on_event=on_event,
             )
@@ -89,7 +91,7 @@ class RunService:
             self._update_status(run_id, "completed", final_answer=result["answer"], summary=self._summary(run_id))
             self.publish(run_id, {"event": "run_completed", "final_answer": result["answer"]})
         except Exception as error:
-            self._update_status(run_id, "failed", error=str(error))
+            self._update_status(run_id, "failed", error=str(error), summary=self._summary(run_id))
             self.publish(run_id, {"event": "run_failed", "error": str(error)})
 
     async def _publish_async(self, run_id: str, event: dict[str, Any]) -> None:
@@ -151,7 +153,7 @@ class RunService:
         estimated_cost = 0.0
         steps = 0
         for event in events:
-            if event.get("event") == "model_response":
+            if event.get("event") == "router_decision":
                 steps += 1
                 model = event.get("routed_label")
                 if model and model not in models:
