@@ -48,6 +48,8 @@ class RoutedAgent:
         candidate_labels: list[str] | None = None,
         preference: int = 2,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        mode: str = "router",
+        selected_model: str | None = None,
     ) -> None:
         self.router = router
         self.tools = WorkspaceTools(workspace)
@@ -55,6 +57,8 @@ class RoutedAgent:
         self.candidate_labels = candidate_labels
         self.preference = preference
         self.on_event = on_event
+        self.mode = mode
+        self.selected_model = selected_model
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -112,6 +116,7 @@ class RoutedAgent:
             })
         execution = self.router.execute_selected(route, trace)
         action = _action(execution.content)
+        model_cfg = self.router.models.get(route.selected_label)
         event = {
             "event": "model_response",
             "step": state["step"],
@@ -123,6 +128,9 @@ class RoutedAgent:
             "content": execution.content,
             "reasoning": execution.reasoning_content,
             "action": action,
+            "usage": execution.usage,
+            "input_price_per_million": model_cfg.input_price_per_million if model_cfg else 0.0,
+            "output_price_per_million": model_cfg.output_price_per_million if model_cfg else 0.0,
         }
         if state["step"] >= self.max_steps:
             action = {"type": "final", "answer": "Stopped: agent reached maximum step count."}

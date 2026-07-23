@@ -13,8 +13,8 @@
     {"label": "deepseek-v3.1", "representation_name": "deepseek-v3.1", "input_price_per_million": 0.56, "output_price_per_million": 1.69, "latency_seconds": 0.05, "execution_profile": "minimax_m3"},
     {"label": "qwen3-32b", "representation_name": "qwen3-32b", "input_price_per_million": 0.28, "output_price_per_million": 2.82, "latency_seconds": 0.05, "execution_profile": "minimax_m3"},
     {"label": "qwen2.5-7b-instruct", "representation_name": "qwen2.5-7b-instruct", "input_price_per_million": 0.07, "output_price_per_million": 0.14, "latency_seconds": 0.05, "execution_profile": "minimax_m3"},
-    {"label": "deepseek-v4-pro", "representation_name": "deepseek-v4-pro", "input_price_per_million": 0.02, "output_price_per_million": 0.05, "latency_seconds": 0.8, "execution_profile": "minimax_m3"},
-    {"label": "deepseek-v4-flash", "representation_name": "deepseek-v4-flash", "input_price_per_million": 0.02, "output_price_per_million": 0.05, "latency_seconds": 0.8, "execution_profile": "minimax_m3"},
+    {"label": "deepseek-v4-pro", "representation_name": "deepseek-v4-pro", "input_price_per_million": 0.43, "output_price_per_million": 0.87, "latency_seconds": 0.8, "execution_profile": "minimax_m3"},
+    {"label": "deepseek-v4-flash", "representation_name": "deepseek-v4-flash", "input_price_per_million": 0.14, "output_price_per_million": 0.28, "latency_seconds": 0.3, "execution_profile": "minimax_m3"},
     {"label": "qwen3-0.6b", "representation_name": "qwen3-0.6b", "input_price_per_million": 0.02, "output_price_per_million": 0.05, "latency_seconds": 0.8, "execution_profile": "minimax_m3"}
   ],
   "execution_profiles": {

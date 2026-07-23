@@ -78,14 +78,22 @@ class RunService:
             # preserves model → tool → model ordering.
             asyncio.run_coroutine_threadsafe(self._publish_async(run_id, event), loop).result()
 
+        candidate_labels = request.candidate_labels
+        if request.mode == "model" and request.selected_model:
+            candidate_labels = [request.selected_model]
+        elif not candidate_labels:
+            candidate_labels = DEFAULT_CANDIDATE_LABELS
+
         try:
             agent = RoutedAgent(
                 self.router,
                 workspace,
                 max_steps=request.max_steps,
-                candidate_labels=request.candidate_labels or DEFAULT_CANDIDATE_LABELS,
+                candidate_labels=candidate_labels,
                 preference=request.preference,
                 on_event=on_event,
+                mode=request.mode,
+                selected_model=request.selected_model,
             )
             result = await asyncio.to_thread(agent.run, prompt)
             self._update_status(run_id, "completed", final_answer=result["answer"], summary=self._summary(run_id))
@@ -151,9 +159,18 @@ class RunService:
         models: list[str] = []
         tools: list[str] = []
         estimated_cost = 0.0
+        actual_cost = 0.0
+        total_latency_ms = 0
+        total_input_tokens = 0
+        total_cache_tokens = 0
+        total_output_tokens = 0
         steps = 0
+
+        model_stats: dict[str, dict[str, Any]] = {}
+
         for event in events:
-            if event.get("event") == "router_decision":
+            event_type = event.get("event")
+            if event_type == "router_decision":
                 steps += 1
                 model = event.get("routed_label")
                 if model and model not in models:
@@ -162,9 +179,87 @@ class RunService:
                     if candidate.get("label") == model:
                         estimated_cost += float(candidate.get("predicted_cost", 0.0))
                         break
-            if event.get("event") == "tool_result" and event.get("tool") not in tools:
+                router_lat = int(event.get("router_latency_ms") or 0)
+                total_latency_ms += router_lat
+
+            elif event_type == "model_response":
+                model = event.get("routed_label") or "unknown"
+                if model not in model_stats:
+                    model_stats[model] = {
+                        "model_label": model,
+                        "executed_model": event.get("executed_model", ""),
+                        "steps": 0,
+                        "actual_cost": 0.0,
+                        "input_tokens": 0,
+                        "cache_tokens": 0,
+                        "output_tokens": 0,
+                        "total_latency_ms": 0,
+                        "avg_latency_ms": 0.0,
+                    }
+                stat = model_stats[model]
+                stat["steps"] += 1
+
+                model_lat = int(event.get("model_latency_ms") or 0)
+                stat["total_latency_ms"] += model_lat
+                total_latency_ms += model_lat
+
+                usage = event.get("usage") or {}
+                inp = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                cache_details = usage.get("prompt_tokens_details") or {}
+                cache = int(
+                    usage.get("prompt_cache_hit_tokens")
+                    or usage.get("cached_tokens")
+                    or usage.get("cache_read_tokens")
+                    or (cache_details.get("cached_tokens") if isinstance(cache_details, dict) else 0)
+                    or 0
+                )
+                out = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+
+                if inp == 0 and out == 0:
+                    candidates = event.get("candidates") or []
+                    matched = next((c for c in candidates if c.get("label") == model), None)
+                    if matched:
+                        out = int(matched.get("predicted_output_tokens") or 0)
+
+                stat["input_tokens"] += inp
+                stat["cache_tokens"] += cache
+                stat["output_tokens"] += out
+
+                total_input_tokens += inp
+                total_cache_tokens += cache
+                total_output_tokens += out
+
+                in_price = float(event.get("input_price_per_million") or 0.0)
+                out_price = float(event.get("output_price_per_million") or 0.0)
+                if in_price > 0 or out_price > 0:
+                    step_cost = (inp * in_price / 1_000_000) + (out * out_price / 1_000_000)
+                else:
+                    candidates = event.get("candidates") or []
+                    matched = next((c for c in candidates if c.get("label") == model), None)
+                    step_cost = float(matched.get("predicted_cost", 0.0)) if matched else 0.0
+
+                stat["actual_cost"] += step_cost
+                actual_cost += step_cost
+
+            elif event_type == "tool_result" and event.get("tool") not in tools:
                 tools.append(event["tool"])
-        return {"steps": steps, "router_estimated_cost": estimated_cost, "routed_models": models, "tools": tools}
+
+        for stat in model_stats.values():
+            if stat["steps"] > 0:
+                stat["avg_latency_ms"] = round(stat["total_latency_ms"] / stat["steps"], 1)
+
+        return {
+            "steps": steps,
+            "router_estimated_cost": estimated_cost,
+            "actual_cost": actual_cost,
+            "total_latency_ms": total_latency_ms,
+            "total_input_tokens": total_input_tokens,
+            "total_cache_tokens": total_cache_tokens,
+            "total_output_tokens": total_output_tokens,
+            "routed_models": models,
+            "tools": tools,
+            "model_stats": list(model_stats.values()),
+        }
 
     def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
         self._load_metadata(run_id)

@@ -45,9 +45,31 @@ async def index() -> dict[str, str]:
     }
 
 
+from .service import RunService, DEFAULT_CANDIDATE_LABELS
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/models")
+async def list_models(request: Request) -> dict[str, object]:
+    router = runs(request).router
+    items = []
+    for label in DEFAULT_CANDIDATE_LABELS:
+        if label in router.models:
+            cfg = router.models[label]
+            profile = router.config.execution_profiles.get(cfg.execution_profile)
+            items.append({
+                "label": cfg.label,
+                "input_price_per_million": cfg.input_price_per_million,
+                "output_price_per_million": cfg.output_price_per_million,
+                "latency_seconds": cfg.latency_seconds,
+                "execution_profile": cfg.execution_profile,
+                "model_name": profile.model_name if profile else cfg.label,
+            })
+    return {"items": items, "default_candidates": DEFAULT_CANDIDATE_LABELS}
 
 
 @app.get("/api/cases")
