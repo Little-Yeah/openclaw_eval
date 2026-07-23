@@ -11,6 +11,43 @@ TOOL_SPEC = [
     {"name": "write_file", "arguments": {"path": "relative file path", "content": "text"}},
 ]
 
+KNOWN_BINARY_SUFFIXES = {
+    ".7z",
+    ".avi",
+    ".bin",
+    ".bmp",
+    ".class",
+    ".dll",
+    ".doc",
+    ".docx",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jar",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".o",
+    ".obj",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".pyc",
+    ".so",
+    ".tar",
+    ".tif",
+    ".tiff",
+    ".wav",
+    ".webp",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+
 
 class WorkspaceTools:
     def __init__(self, workspace: Path) -> None:
@@ -22,6 +59,19 @@ class WorkspaceTools:
             raise ValueError("path must remain inside the case workspace")
         return path
 
+    @staticmethod
+    def _looks_binary(path: Path, sample: bytes) -> bool:
+        if path.suffix.lower() in KNOWN_BINARY_SUFFIXES:
+            return True
+        if b"\x00" in sample:
+            return True
+        if sample.startswith(b"PK\x03\x04"):
+            return True
+        if not sample:
+            return False
+        control_bytes = sum(1 for byte in sample if byte < 9 or 13 < byte < 32)
+        return control_bytes / len(sample) > 0.10
+
     def execute(self, name: str, arguments: dict[str, Any]) -> str:
         if name == "list_files":
             path = self._path(str(arguments.get("path", ".")))
@@ -29,6 +79,9 @@ class WorkspaceTools:
             return json.dumps(result[:200])
         if name == "read_file":
             path = self._path(str(arguments["path"]))
+            sample = path.read_bytes()[:4096]
+            if self._looks_binary(path, sample):
+                return f"binary file: {path.relative_to(self.workspace)} (preview skipped)"
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             start = max(int(arguments.get("start_line", 1)), 1)
             end = min(int(arguments.get("end_line", start + 199)), len(lines))
