@@ -153,7 +153,7 @@ default:
 
 ```bash
 cd ..
-uv run scripts/run_bench_clean.py --model minimax/MiniMax-M3
+uv run scripts/run_bench_clean.py --model provider/your-model-id
 ```
 
 The archive is written to `runs/<run-id>/` at the project root with `results/`,

@@ -1,7 +1,7 @@
 # Pinch Agent
 
 Minimal real LangGraph agent. Every model turn calls the local `pinch-router`;
-the router selects a display label while the configured MiniMax M3 profile
+the router selects a display label while the configured provider profile
 generates the response.
 
 ```bash

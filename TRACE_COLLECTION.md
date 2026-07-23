@@ -85,7 +85,7 @@ collect/traces/<category>/<task_id>.jsonl
 
 ## 4. `full-v1` 核心数据集
 
-`full-v1` 是本项目当前可分发的核心采集资产。其元数据在 `runs/full-v1/metadata/run.json`：使用 `minimax/MiniMax-M3`，以 3 个 trace-only worker 完成全部 147 个 task。
+`full-v1` 是本项目当前可分发的核心采集资产。其元数据在 `runs/full-v1/metadata/run.json`：使用配置的 agent model，以 3 个 trace-only worker 完成全部 147 个 task。
 
 数据关系为：
 

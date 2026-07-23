@@ -32,9 +32,6 @@ models:
   - openrouter/deepseek/deepseek-chat
   #- openrouter/deepseek/deepseek-v3.2
 
-  # Minimax
-  - openrouter/minimax/minimax-m2.1
-  - openrouter/minimax/minimax-m2.5
 
   # Qwen
   - openrouter/qwen/qwen3-coder-next

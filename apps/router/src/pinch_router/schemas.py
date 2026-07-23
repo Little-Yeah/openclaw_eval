@@ -37,7 +37,13 @@ class ModelConfig(BaseModel):
 
 
 class ExecutionProfile(BaseModel):
-    endpoint: str
+    """A configurable model provider used for actual agent execution."""
+
+    api_type: Literal["openai", "anthropic"] = "openai"
+    # `endpoint` remains supported for existing local configs. New configs
+    # should use `base_url`, without the protocol-specific path suffix.
+    endpoint: str = ""
+    base_url: str = ""
     api_key: str = ""
     model_name: str
     timeout_seconds: float = Field(default=120, gt=0)

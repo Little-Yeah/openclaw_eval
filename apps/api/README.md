@@ -31,7 +31,7 @@ gitignored `apps/router/config/models.json`; see
 `apps/router/config/models.example.json` for the exact shape. It accepts
 `base_url`, `api_type`, and either direct `api_key` / `model` values or an
 `execution_profile` reference. The latter reuses the configured model and key,
-which is how the bundled MiniMax judge is set up. Supported API types are
+which is useful when the execution model and judge share a provider. Supported API types are
 `openai` (including private OpenAI-compatible gateways) and `anthropic`.
 For compatibility with the offline pipeline only, the API falls back to
 `config/eval.json → evaluate.judge` when the demo-specific `judge` block is

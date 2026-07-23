@@ -12,7 +12,7 @@ import torch.nn.functional as functional
 from transformers import AutoModel, AutoTokenizer
 
 from .context import RoutingContext
-from .executor import MiniMaxExecutor, ModelExecution
+from .executor import ModelExecution, ProviderExecutor
 from .schemas import ModelConfig, RouterConfig, TraceInput
 
 
@@ -192,7 +192,7 @@ class CheckpointRouter:
     def execute_selected(self, route_result: RouteResult, trace: TraceInput) -> ModelExecution:
         profile_name = self.models[route_result.selected_label].execution_profile
         profile = self.config.execution_profiles[profile_name]
-        return MiniMaxExecutor(profile_name, profile).execute(trace)
+        return ProviderExecutor(profile_name, profile).execute(trace)
 
 
 def result_as_json(result: RouteResult) -> str:

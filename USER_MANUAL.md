@@ -2,7 +2,7 @@
 
 本仓库有两条独立的使用路径：
 
-1. **Router Lab Demo（本手册第一部分）**：用已训练的本地 Router 为 PinchBench Agent 的每一个模型步骤选择标签，实际调用配置好的 MiniMax M3，并在网页中实时查看路由、工具调用和结果。
+1. **Router Lab Demo（本手册第一部分）**：用已训练的本地 Router 为 PinchBench Agent 的每一个模型步骤选择标签，实际调用你配置的模型 provider，并在网页中实时查看路由、工具调用、结果和评分。
 2. **OpenClaw Eval 离线流水线（第二部分）**：采集 trace、重放候选模型并由 judge 评分，用于后续训练 Router。
 
 以下所有命令默认在仓库根目录执行。
@@ -18,11 +18,11 @@
   → FastAPI 创建独立 run/workspace
   → LangGraph Agent 的每个模型步骤调用本地 Router
   → Router 输出预测标签、概率、质量/成本估计
-  → 本地配置中的 MiniMax M3 实际生成回复
+  → 本地配置中的 provider 实际生成回复
   → SSE 将路由、模型、工具和完成事件推到网页
 ```
 
-Router 的**预测标签**和实际执行模型有意分开：当前 demo 中所有标签都映射到同一个 `MiniMax-M3` execution profile。页面会同时显示“Router chose …”和“executed by MiniMax-M3”。这让没有七个真实模型账户时仍能演示路由决策。
+Router 的**预测标签**和实际执行模型有意分开：多个 Router label 可以映射到同一个 execution profile。页面会同时显示 Router 选择的 label 和实际执行 provider/model。这让没有七个真实模型账户时仍能演示路由决策。
 
 ### A.2 前置条件
 
@@ -32,7 +32,7 @@ Router 的**预测标签**和实际执行模型有意分开：当前 demo 中所
 | Python | 3.11+；由 `uv` 管理虚拟环境 |
 | [uv](https://docs.astral.sh/uv/) | Python 包、环境和命令管理 |
 | Node.js + npm | Node.js 20+，用于 React/Vite 前端 |
-| MiniMax API Key | 用于真实的 `MiniMax-M3` 模型调用，会产生该账号的 API 用量 |
+| 模型 provider 的 API Key | 用于真实模型调用和可选 LLM judge，会产生对应账号的 API 用量 |
 
 先确认工具可用：
 
@@ -70,7 +70,7 @@ apps/router/var/assets/
 
 若这三个项目已存在，无需重复复制。`apps/router/var/` 被 Git 忽略。
 
-### A.4 配置 MiniMax（必须）
+### A.4 配置模型 provider 与可选 judge（必须）
 
 复制模板，再仅在本机填写 key：
 
@@ -82,24 +82,38 @@ cp apps/router/config/models.example.json apps/router/config/models.json
 
 ```json
 "execution_profiles": {
-  "minimax_m3": {
-    "endpoint": "https://api.minimax.io/v1/text/chatcompletion_v2",
-    "api_key": "PASTE_YOUR_MINIMAX_API_KEY_HERE",
-    "model_name": "MiniMax-M3",
-    "timeout_seconds": 120
+  "default_provider": {
+    "api_type": "openai",
+    "base_url": "https://provider.example/v1",
+    "api_key": "PASTE_YOUR_PROVIDER_API_KEY_HERE",
+    "model_name": "your-model-id"
   }
 }
 ```
 
-把占位的 `api_key` 改成真实 MiniMax key。demo 不读取环境变量；所有 label 到 base URL、model name 和 key 的映射都在这个本地 config 中。`models.json` 已被 Git 忽略，模板文件可以安全提交。不要把 key 粘贴到 issue、聊天记录或代码中。
+把占位的 `base_url`、`api_key` 和 `model_name` 改成你的 provider 配置。`api_type` 支持 `openai`（`POST <base_url>/chat/completions`）和 `anthropic`（`POST <base_url>/messages`）；`base_url` 不应包含这两个路径后缀。demo 不读取环境变量；所有 label 到 provider、model 和 key 的映射都在这个本地 config 中。`models.json` 已被 Git 忽略，模板文件可以安全提交。不要把 key 粘贴到 issue、聊天记录或代码中。
+
+`judge` 是可选的后处理裁判配置。每个 run 完成后，PinchBench 会先保存 trace，再按 task 的 grading type 运行自动评分、LLM judge 或混合评分。judge 可直接填写自己的 `api_key` / `model`，或通过 `execution_profile` 复用上面的本地凭据和模型：
+
+```json
+"judge": {
+  "name": "default-judge",
+  "api_type": "openai",
+  "base_url": "https://provider.example/v1",
+  "execution_profile": "default_provider"
+}
+```
+
+没有 `judge` 时，自动评分 task 仍可得到分数；`llm_judge` / `hybrid` task 会在结果中标记 judge 不可用。无需也不应配置 OpenRouter。
 
 可按需调整：
 
 | 字段 | 作用 |
 | --- | --- |
 | `default_candidates` | 默认参与排序的 Router label；可删减为任意 checkpoint 已知标签的子集 |
-| `models[].execution_profile` | 每个预测 label 要使用的实际执行 profile；demo 默认都为 `minimax_m3` |
-| `timeout_seconds` | 单次 MiniMax 调用的超时秒数，默认 120 |
+| `models[].execution_profile` | 每个预测 label 要使用的实际执行 profile；可让所有 label 复用一个 profile，也可分别映射 |
+| `execution_profiles.<name>.api_type` | provider 协议：`openai` 或 `anthropic` |
+| `execution_profiles.<name>.base_url` | provider 的版本根路径；程序按协议补齐请求路径 |
 
 ### A.5 安装依赖（首次一次）
 
@@ -133,14 +147,14 @@ make demo
 
 1. 在左侧点击 **New test**。
 2. 搜索或选择一个 PinchBench case；页面会显示 task prompt、类别、评分类型和 timeout。
-3. 选择 Routing policy：从 Quality first 到 Lowest cost。它影响 Router 对质量和成本预测的权衡，不改变 MiniMax 的实际执行 profile。
+3. 选择 Routing policy：从 Quality first 到 Lowest cost。它影响 Router 对质量和成本预测的权衡，不改变实际执行 profile。
 4. 点击 **Start agent run**。
 5. 在 run 页面依次查看每个 step：
    - Router 选择的 label、最高概率；展开 **Router scorecard** 可看候选概率、预测质量和预估成本；
-   - `MiniMax is working…` 表示路由完成、正在等待真实模型 API 返回，不是页面卡死；
+   - `Model provider is working…` 表示路由完成、正在等待真实模型 API 返回，不是页面卡死；
    - `Agent reasoning`、最终 content 会按 Markdown 渲染；
    - 若该步需要工具，左列是 tool call（名称和参数），右列是对应 tool result；
-   - 结束时的 Summary 汇总模型步数、Router 预估成本、涉及的预测标签和工具。
+   - 结束时的 Summary 汇总模型步数、Router 预估成本、涉及的预测标签和工具；随后会出现 PinchBench Evaluation，显示 Score、维度明细和 judge notes。比较多个 run 时，这些评分会集中显示在独立的 Score Comparison 区域。
 6. 左侧 Run history 可重新打开历史 run；已结束 run 悬停后点击 `×` 并确认可删除。删除会移除该 run 的 event log 与隔离 workspace，不能恢复；运行中的 run 不可删除。
 
 ### A.8 API 与 SSE 冒烟测试
@@ -152,7 +166,7 @@ make demo
 curl http://127.0.0.1:8000/api/health
 curl http://127.0.0.1:8000/api/cases
 
-# 创建一个最小真实 run（会调用配置好的 MiniMax）
+# 创建一个最小真实 run（会调用配置好的 provider）
 curl -X POST http://127.0.0.1:8000/api/runs \
   -H 'content-type: application/json' \
   --data '{"case_id":"task_sanity","preference":2,"max_steps":2}'
@@ -187,10 +201,10 @@ curl -X DELETE http://127.0.0.1:8000/api/runs/<run_id>
 cd apps/router
 uv run pinch-router context --trace examples/trace.json
 
-# 本地 Router 预测；不会调用 MiniMax
+# 本地 Router 预测；不会调用 provider
 uv run pinch-router route --trace examples/trace.json
 
-# Router 预测并真实调用 MiniMax
+# Router 预测并真实调用 provider
 uv run pinch-router execute --trace examples/trace.json
 
 # 运行一个完整 LangGraph Agent case
@@ -202,9 +216,10 @@ uv run pinch-agent run --case task_sanity
 
 | 现象 | 检查与处理 |
 | --- | --- |
-| `models.json` 不存在 / API key 报错 | 执行 A.4 的复制命令，确认填写的是 `execution_profiles.minimax_m3.api_key` |
+| `models.json` 不存在 / API key 报错 | 执行 A.4 的复制命令，确认填写的是所选 `execution_profile` 的 `api_key` |
 | 缺少 `.pth`、`.npz` 或 `chinese_mobilebert_base_f2` | 按 A.3 复制三项资产，确认路径在 `apps/router/var/assets/` |
-| 页面显示正在等待 MiniMax | 该步骤已开始真实 HTTP 调用；检查启动终端中的 API 日志、key、网络和 `timeout_seconds`。等待结束后会显示完成或失败状态 |
+| LLM judge 返回 404 | 确认 `judge.base_url` 是版本根路径，而非已带 `/messages` 或 `/chat/completions` 的完整路径；确认 `api_type` 与 provider 协议一致 |
+| 页面显示正在等待模型 | 该步骤已开始真实 HTTP 调用；检查启动终端中的 API 日志、key、网络和 provider 配置。等待结束后会显示完成或失败状态 |
 | `Address already in use` | 已有 `make demo` / API / Vite 进程占用了 8000 或 5173；停止旧进程后重试 |
 | 打开 `:5173` 但没有 case | 确认 `curl http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}` |
 | Web 依赖安装失败 | 确认 Node.js 20+；删除 `apps/web/node_modules` 后重新执行 `npm install` |
@@ -214,7 +229,7 @@ uv run pinch-agent run --case task_sanity
 
 | 路径 | 内容 | Git 状态 |
 | --- | --- | --- |
-| `apps/router/config/models.json` | MiniMax key、endpoint、执行 profile | 忽略 |
+| `apps/router/config/models.json` | provider/judge key、endpoint、执行 profile | 忽略 |
 | `apps/router/var/assets/` | Router checkpoint 和 encoder 权重 | 忽略 |
 | `apps/api/var/runs/` | 每次 run 的元数据、SSE event log、Agent workspace | 忽略 |
 | `apps/agent/var/` | 单独运行 Agent 时的 workspace | 忽略 |
