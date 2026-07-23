@@ -53,3 +53,5 @@ pnpm-debug.log*
 *.tsbuildinfo
 apps/web/vite.config.js
 apps/web/vite.config.d.ts
+
+PACKAGE_READY_2026-07-22_1824/

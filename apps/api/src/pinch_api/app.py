@@ -170,12 +170,11 @@ async def events(run_id: str, request: Request) -> StreamingResponse:
 def main() -> None:
     import uvicorn
 
-    # The demo is a small monorepo: changes to the Agent or Router must reload
-    # the API process too, otherwise a running `make demo` would keep old code.
+    # Demo mode favors SSE stability over hot reload. Uvicorn reload can restart
+    # the API process mid-run and sever the browser's EventSource connection.
     uvicorn.run(
         "pinch_api.app:app",
         host="127.0.0.1",
         port=8000,
-        reload=True,
-        reload_dirs=[str(ROOT / "apps" / name / "src") for name in ("api", "agent", "router")],
+        reload=False,
     )

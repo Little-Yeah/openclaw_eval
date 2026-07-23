@@ -189,6 +189,15 @@ def _grade_automated(
             notes="No automated grading code found",
         )
 
+    # Many task graders call Path.read_text() without an explicit encoding.
+    # On Windows this can fall back to a locale codec such as gbk and fail on
+    # UTF-8 content produced by models. Normalize the common zero-arg form.
+    grading_code = re.sub(
+        r"\.read_text\(\)",
+        ".read_text(encoding='utf-8', errors='replace')",
+        grading_code,
+    )
+
     namespace = _build_automated_namespace(skill_dir)
     exec(grading_code, namespace)
     grade_func = namespace.get("grade")

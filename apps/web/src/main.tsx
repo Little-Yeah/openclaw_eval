@@ -286,6 +286,31 @@ function App() {
     setRuns(previous => [run, ...previous])
     setScreen('run')
     const source = new EventSource(`${api}${payload.events_url}`)
+    let isSyncing = false
+    const syncRunState = async () => {
+      if (isSyncing) return
+      isSyncing = true
+      try {
+        const [recordResponse, historyResponse] = await Promise.all([
+          fetch(`${api}/api/runs/${payload.run_id}`),
+          fetch(`${api}/api/runs/${payload.run_id}/events/history`),
+        ])
+        if (!recordResponse.ok || !historyResponse.ok) return
+        const [record, history] = await Promise.all([recordResponse.json(), historyResponse.json()])
+        setActiveRun(record)
+        setRuns(previous => [record, ...previous.filter(item => item.run_id !== record.run_id)])
+        if (Array.isArray(history.items)) {
+          setEvents(history.items)
+        }
+        if (record.status === 'completed' || record.status === 'failed') {
+          source.close()
+        }
+      } catch {
+        // Keep the EventSource open so the browser can retry automatically.
+      } finally {
+        isSyncing = false
+      }
+    }
     ;['run_started', 'router_decision', 'model_call_started', 'model_response', 'tool_result', 'grading_started', 'run_completed', 'run_failed'].forEach(name => source.addEventListener(name, message => {
       const event = JSON.parse((message as MessageEvent).data) as AgentEvent
       setEvents(previous => [...previous, event])
@@ -297,7 +322,9 @@ function App() {
         })
       }
     }))
-    source.onerror = () => source.close()
+    source.onerror = () => {
+      void syncRunState()
+    }
   }
 
   async function openRun(run: Run) {

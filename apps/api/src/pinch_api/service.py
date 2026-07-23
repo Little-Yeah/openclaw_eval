@@ -52,10 +52,10 @@ class RunService:
         path = self._metadata_path(run_id)
         if not path.exists():
             raise KeyError(run_id)
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def _save_metadata(self, run_id: str, payload: dict[str, Any]) -> None:
-        self._metadata_path(run_id).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        self._metadata_path(run_id).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     async def create(self, request: CreateRunRequest) -> dict[str, Any]:
         case = load_case(self.skill_dir, request.case_id)
@@ -146,7 +146,7 @@ class RunService:
         records = []
         for path in self.runs_dir.glob("*/run.json"):
             try:
-                records.append(json.loads(path.read_text()))
+                records.append(json.loads(path.read_text(encoding="utf-8")))
             except json.JSONDecodeError:
                 continue
         return sorted(records, key=lambda item: item.get("created_at", ""), reverse=True)
@@ -166,7 +166,7 @@ class RunService:
         path = self._run_dir(run_id) / "events.jsonl"
         if not path.exists():
             return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line]
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
     def _task_grading_type(self, case_id: str) -> str:
         return TaskLoader(self.skill_dir / "tasks").load_task(self.skill_dir / "tasks" / f"{case_id}.md").grading_type
