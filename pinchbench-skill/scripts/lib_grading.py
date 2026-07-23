@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib import error, request
 
 from lib_agent import call_judge_api, ensure_agent_exists, run_openclaw_prompt, slugify_model
 from lib_tasks import Task
@@ -126,6 +127,7 @@ def grade_task(
     judge_agent_prefix: str = DEFAULT_JUDGE_AGENT_PREFIX,
     judge_timeout_seconds: float = DEFAULT_JUDGE_TIMEOUT_SECONDS,
     judge_backend: str = "api",
+    judge_config: Optional[Dict[str, Any]] = None,
     verbose: bool = False,
 ) -> GradeResult:
     grading_type = task.grading_type
@@ -146,6 +148,7 @@ def grade_task(
             judge_agent_prefix=judge_agent_prefix,
             judge_timeout_seconds=judge_timeout_seconds,
             judge_backend=judge_backend,
+            judge_config=judge_config,
             skill_dir=skill_dir,
             verbose=verbose,
         )
@@ -161,6 +164,7 @@ def grade_task(
             judge_agent_prefix=judge_agent_prefix,
             judge_timeout_seconds=judge_timeout_seconds,
             judge_backend=judge_backend,
+            judge_config=judge_config,
             skill_dir=skill_dir,
             verbose=verbose,
         )
@@ -250,6 +254,80 @@ def _stage_private_image_key(skill_dir: Optional[Path]) -> str:
         return ""
 
 
+def _call_configured_judge_api(
+    *, prompt: str, config: Dict[str, Any], timeout_seconds: float
+) -> Dict[str, Any]:
+    """Call a judge using the project's explicit provider configuration.
+
+    This intentionally does not infer a provider from model naming. It lets
+    embedders use private gateways and OpenAI-compatible endpoints without an
+    OpenRouter dependency.
+    """
+    base_url = str(config.get("base_url") or "").rstrip("/")
+    api_format = str(config.get("api_format") or config.get("api_type") or "openai").lower()
+    api_key = str(config.get("api_key") or "")
+    model = str(config.get("model") or config.get("name") or "")
+    if not base_url or not model:
+        return {
+            "status": "error",
+            "text": "",
+            "error": "PinchBench judge is not configured: evaluate.judge requires base_url and model",
+        }
+    if api_format not in {"openai", "anthropic"}:
+        return {"status": "error", "text": "", "error": f"Unsupported judge api_format: {api_format}"}
+
+    if api_format == "anthropic":
+        endpoint = "/messages"
+        payload = {
+            "model": model,
+            "system": "You are a strict grading function. Respond with only a JSON object.",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": int(config.get("max_tokens") or 2048),
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": str(config.get("anthropic_version") or "2023-06-01"),
+        }
+    else:
+        endpoint = "/chat/completions"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a strict grading function. Respond with only a JSON object."},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0,
+            "max_tokens": int(config.get("max_tokens") or 2048),
+        }
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+
+    try:
+        req = request.Request(
+            base_url + endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with request.urlopen(req, timeout=float(config.get("timeout") or timeout_seconds)) as response:  # noqa: S310 - endpoint is local configuration
+            body = json.loads(response.read().decode("utf-8"))
+        if api_format == "anthropic":
+            text = "\n".join(
+                str(block.get("text") or "")
+                for block in body.get("content", [])
+                if block.get("type") == "text"
+            )
+        else:
+            text = str(body["choices"][0]["message"].get("content") or "")
+        return {"status": "success", "text": text}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        return {"status": "error", "text": "", "error": f"Judge HTTP {exc.code}: {detail}"}
+    except (error.URLError, TimeoutError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {"status": "error", "text": "", "error": f"Judge request failed: {exc}"}
+
+
 def _grade_llm_judge(
     *,
     task: Task,
@@ -258,6 +336,7 @@ def _grade_llm_judge(
     judge_agent_prefix: str,
     judge_timeout_seconds: float,
     judge_backend: str = "api",
+    judge_config: Optional[Dict[str, Any]] = None,
     skill_dir: Optional[Path] = None,
     verbose: bool = False,
 ) -> GradeResult:
@@ -322,13 +401,22 @@ def _grade_llm_judge(
 
     max_judge_attempts = 2
     raw_parsed: Dict[str, Any] = {}
+    last_judge_error = ""
     for attempt in range(max_judge_attempts):
         if judge_backend == "api":
             # Direct API call — bypasses OpenClaw personality injection
-            judge_result = call_judge_api(
-                prompt=prompt,
-                model=judge_model,
-                timeout_seconds=judge_timeout_seconds,
+            judge_result = (
+                _call_configured_judge_api(
+                    prompt=prompt,
+                    config=judge_config,
+                    timeout_seconds=judge_timeout_seconds,
+                )
+                if judge_config is not None
+                else call_judge_api(
+                    prompt=prompt,
+                    model=judge_model,
+                    timeout_seconds=judge_timeout_seconds,
+                )
             )
 
             if verbose:
@@ -337,6 +425,7 @@ def _grade_llm_judge(
                     logger.info("   [VERBOSE] Judge error: %s", judge_result["error"])
 
             if judge_result.get("status") != "success":
+                last_judge_error = str(judge_result.get("error") or judge_result.get("status") or "unknown error")
                 logger.warning(
                     "Judge API call failed (attempt %d/%d): %s",
                     attempt + 1,
@@ -393,7 +482,7 @@ def _grade_llm_judge(
     notes = parsed.get("notes", "")
 
     if not raw_parsed:
-        notes = "LLM judge failed: no parseable response after all attempts"
+        notes = f"LLM judge failed: {last_judge_error or 'no parseable response after all attempts'}"
         logger.warning("LLM judge for %s produced no parseable output", task.task_id)
     elif total is None:
         notes = "LLM judge failed: response parsed but no score extracted"

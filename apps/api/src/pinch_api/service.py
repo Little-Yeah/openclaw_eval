@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sys
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -14,6 +15,16 @@ from pinch_agent.cases import load_case, prepare_workspace
 from pinch_router.engine import CheckpointRouter
 
 from .models import CreateRunRequest
+
+# PinchBench ships its grading engine as benchmark scripts rather than an
+# installable package.  Put that directory on the import path once so the demo
+# uses the exact same task parser and grader as the benchmark runner.
+PINCHBENCH_SCRIPTS = Path(__file__).resolve().parents[4] / "pinchbench-skill" / "scripts"
+if str(PINCHBENCH_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(PINCHBENCH_SCRIPTS))
+
+from lib_grading import grade_task  # noqa: E402
+from lib_tasks import TaskLoader  # noqa: E402
 
 DEFAULT_CANDIDATE_LABELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 
@@ -96,8 +107,11 @@ class RunService:
                 selected_model=request.selected_model,
             )
             result = await asyncio.to_thread(agent.run, prompt)
-            self._update_status(run_id, "completed", final_answer=result["answer"], summary=self._summary(run_id))
-            self.publish(run_id, {"event": "run_completed", "final_answer": result["answer"]})
+            self.publish(run_id, {"event": "grading_started", "grading_type": self._task_grading_type(request.case_id)})
+            grade = await asyncio.to_thread(self._grade_run, run_id, request.case_id, workspace)
+            summary = self._summary(run_id, grade)
+            self._update_status(run_id, "completed", final_answer=result["answer"], summary=summary, grade=grade)
+            self.publish(run_id, {"event": "run_completed", "final_answer": result["answer"], "grade": grade})
         except Exception as error:
             self._update_status(run_id, "failed", error=str(error), summary=self._summary(run_id))
             self.publish(run_id, {"event": "run_failed", "error": str(error)})
@@ -154,7 +168,78 @@ class RunService:
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line]
 
-    def _summary(self, run_id: str) -> dict[str, Any]:
+    def _task_grading_type(self, case_id: str) -> str:
+        return TaskLoader(self.skill_dir / "tasks").load_task(self.skill_dir / "tasks" / f"{case_id}.md").grading_type
+
+    def _grade_run(self, run_id: str, case_id: str, workspace: Path) -> dict[str, Any]:
+        """Grade the demo trace/workspace with PinchBench's native grader."""
+        task = TaskLoader(self.skill_dir / "tasks").load_task(self.skill_dir / "tasks" / f"{case_id}.md")
+        judge_config = self._judge_config()
+        execution_result = {
+            "task_id": case_id,
+            "status": "success",
+            "workspace": str(workspace),
+            "transcript": self._pinchbench_transcript(self.history(run_id)),
+        }
+        return grade_task(
+            task=task,
+            execution_result=execution_result,
+            skill_dir=self.skill_dir,
+            judge_model=str(judge_config.get("model") or "configured-judge"),
+            judge_backend="api",
+            judge_config=judge_config,
+        ).to_dict()
+
+    def _judge_config(self) -> dict[str, Any]:
+        """Load the demo judge from its router config, then legacy eval config."""
+        if self.router.config.judge is not None:
+            config = self.router.config.judge.model_dump(exclude_none=True)
+            config["api_format"] = config.pop("api_type")
+            profile_name = config.pop("execution_profile", "")
+            if profile_name:
+                profile = self.router.config.execution_profiles.get(profile_name)
+                if profile is None:
+                    return {}
+                config["api_key"] = config.get("api_key") or profile.api_key
+                config["model"] = config.get("model") or profile.model_name
+            return config
+
+        path = self.root / "config" / "eval.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+        judge = payload.get("evaluate", {}).get("judge", {})
+        return judge if isinstance(judge, dict) else {}
+
+    @staticmethod
+    def _pinchbench_transcript(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert the demo's SSE events to PinchBench's transcript format."""
+        transcript: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("event") == "model_response":
+                action = event.get("action") or {}
+                content: list[dict[str, Any]] = []
+                if action.get("type") == "tool":
+                    content.append({
+                        "type": "toolCall",
+                        "name": action.get("name", "unknown"),
+                        "arguments": action.get("arguments") or {},
+                    })
+                else:
+                    text = action.get("answer") or event.get("content") or ""
+                    content.append({"type": "text", "text": str(text)})
+                transcript.append({"type": "message", "message": {"role": "assistant", "content": content}})
+            elif event.get("event") == "tool_result":
+                transcript.append({
+                    "type": "message",
+                    "message": {"role": "toolResult", "content": [str(event.get("result", ""))]},
+                })
+        return transcript
+
+    def _summary(self, run_id: str, grade: dict[str, Any] | None = None) -> dict[str, Any]:
         events = self.history(run_id)
         models: list[str] = []
         tools: list[str] = []
@@ -248,7 +333,7 @@ class RunService:
             if stat["steps"] > 0:
                 stat["avg_latency_ms"] = round(stat["total_latency_ms"] / stat["steps"], 1)
 
-        return {
+        summary = {
             "steps": steps,
             "router_estimated_cost": estimated_cost,
             "actual_cost": actual_cost,
@@ -260,6 +345,9 @@ class RunService:
             "tools": tools,
             "model_stats": list(model_stats.values()),
         }
+        if grade is not None:
+            summary["grade"] = grade
+        return summary
 
     def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
         self._load_metadata(run_id)

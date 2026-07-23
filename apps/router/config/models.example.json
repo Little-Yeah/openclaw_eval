@@ -24,5 +24,11 @@
       "model_name": "MiniMax-M3",
       "timeout_seconds": 120
     }
+  },
+  "judge": {
+    "name": "minimax-m3-judge",
+    "api_type": "anthropic",
+    "base_url": "https://api.minimax.io/anthropic/v1",
+    "execution_profile": "minimax_m3"
   }
 }

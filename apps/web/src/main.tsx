@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import Markdown from 'react-markdown'
@@ -8,10 +8,11 @@ type Case = { id: string; name: string; category: string; grading_type: string; 
 type Candidate = { label: string; probability: number; predicted_quality: number; predicted_cost: number; predicted_output_tokens?: number; score?: number }
 type ModelStat = { model_label: string; executed_model?: string; steps: number; actual_cost: number; input_tokens: number; cache_tokens: number; output_tokens: number; total_latency_ms: number; avg_latency_ms: number }
 type ModelInfo = { label: string; input_price_per_million: number; output_price_per_million: number; latency_seconds: number; execution_profile: string; model_name: string }
-type Summary = { steps: number; router_estimated_cost: number; actual_cost?: number; total_latency_ms?: number; total_input_tokens?: number; total_cache_tokens?: number; total_output_tokens?: number; routed_models: string[]; tools: string[]; model_stats?: ModelStat[] }
+type Grade = { task_id: string; score: number; max_score: number; grading_type: string; breakdown: Record<string, number>; notes: string }
+type Summary = { steps: number; router_estimated_cost: number; actual_cost?: number; total_latency_ms?: number; total_input_tokens?: number; total_cache_tokens?: number; total_output_tokens?: number; routed_models: string[]; tools: string[]; model_stats?: ModelStat[]; grade?: Grade }
 type Run = { run_id: string; case_id: string; status: 'queued' | 'running' | 'completed' | 'failed'; created_at: string; final_answer?: string; error?: string; summary?: Summary; request?: { mode?: 'router' | 'model'; selected_model?: string } }
 type ParsedAction = { type?: string; name?: string; arguments?: Record<string, unknown>; answer?: string }
-type AgentEvent = { event: string; sequence?: number; step?: number; routed_label?: string; candidates?: Candidate[]; executed_model?: string; router_latency_ms?: number; model_latency_ms?: number; content?: string; reasoning?: string; action?: ParsedAction; tool?: string; result?: string; final_answer?: string; error?: string; usage?: Record<string, any>; input_price_per_million?: number; output_price_per_million?: number }
+type AgentEvent = { event: string; sequence?: number; step?: number; routed_label?: string; candidates?: Candidate[]; executed_model?: string; router_latency_ms?: number; model_latency_ms?: number; content?: string; reasoning?: string; action?: ParsedAction; tool?: string; result?: string; final_answer?: string; error?: string; grade?: Grade; usage?: Record<string, any>; input_price_per_million?: number; output_price_per_million?: number }
 type Step = { index: number; route?: AgentEvent; calling?: AgentEvent; response?: AgentEvent; tool?: AgentEvent }
 
 function getRunStrategy(run: Run): {
@@ -21,8 +22,6 @@ function getRunStrategy(run: Run): {
 } {
   const reqMode = run.request?.mode
   const selected = run.request?.selected_model || ''
-  const routedModels = run.summary?.routed_models || []
-
   if (reqMode === 'model' && selected) {
     const isFlash = selected.includes('flash')
     return {
@@ -30,12 +29,6 @@ function getRunStrategy(run: Run): {
       label: selected,
       colorClass: isFlash ? 'strategy-flash' : 'strategy-pro',
     }
-  }
-
-  if (routedModels.length === 1) {
-    const m = routedModels[0]
-    if (m.includes('flash')) return { mode: 'model', label: m, colorClass: 'strategy-flash' }
-    if (m.includes('pro')) return { mode: 'model', label: m, colorClass: 'strategy-pro' }
   }
 
   return {
@@ -127,6 +120,7 @@ type RunReport = {
   total_steps: number
   routed_models: string[]
   model_stats: ModelStat[]
+  grade?: Grade
 }
 
 const api = import.meta.env.VITE_API_URL || ''
@@ -143,6 +137,7 @@ const formatLatency = (ms?: number) => {
   return `${(ms / 1000).toFixed(2)}s`
 }
 const formatTokens = (num?: number) => (num || 0).toLocaleString()
+const scoreValue = (grade?: Grade) => grade ? `${grade.score.toFixed(2)} / ${Math.max(grade.max_score || 1, 1).toFixed(2)}` : '—'
 const preferenceCopy = ['Quality first', 'Quality-led balance', 'Balanced', 'Cost-aware', 'Cost-led balance', 'Lowest cost']
 
 function parseActionPayload(value?: string): ParsedAction | null {
@@ -201,6 +196,11 @@ function App() {
   const [preference, setPreference] = useState(2)
   const [executionMode, setExecutionMode] = useState<'router' | 'model'>('router')
   const [selectedModel, setSelectedModel] = useState<string>('deepseek-v4-flash')
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('router_lab_theme')
+    if (saved === 'dark' || saved === 'light') return saved
+    return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  })
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
   const [starredIds, setStarredIds] = useState<string[]>(() => {
     try {
@@ -216,6 +216,11 @@ function App() {
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false)
   const steps = useMemo(() => toSteps(events), [events])
   const filtered = useMemo(() => cases.filter(item => `${item.name} ${item.category}`.toLowerCase().includes(query.toLowerCase())), [cases, query])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('router_lab_theme', theme)
+  }, [theme])
 
   function toggleStar(caseId: string, e: React.MouseEvent) {
     e.stopPropagation()
@@ -281,7 +286,7 @@ function App() {
     setRuns(previous => [run, ...previous])
     setScreen('run')
     const source = new EventSource(`${api}${payload.events_url}`)
-    ;['run_started', 'router_decision', 'model_call_started', 'model_response', 'tool_result', 'run_completed', 'run_failed'].forEach(name => source.addEventListener(name, message => {
+    ;['run_started', 'router_decision', 'model_call_started', 'model_response', 'tool_result', 'grading_started', 'run_completed', 'run_failed'].forEach(name => source.addEventListener(name, message => {
       const event = JSON.parse((message as MessageEvent).data) as AgentEvent
       setEvents(previous => [...previous, event])
       if (name === 'run_completed' || name === 'run_failed') {
@@ -333,6 +338,9 @@ function App() {
           <button className="new-test" onClick={newTest}>＋ New test</button>
           <button className={`compare-test-btn ${screen === 'compare' ? 'active' : ''}`} onClick={() => setIsCompareModalOpen(true)}>
             <TargetIcon className="svg-icon" /> Compare runs {compareIds.length > 0 && <span className="compare-count-pill">{compareIds.length}</span>}
+          </button>
+          <button className="theme-toggle" onClick={() => setTheme(current => current === 'dark' ? 'light' : 'dark')}>
+            {theme === 'dark' ? '☀ Light theme' : '◐ Dark theme'}
           </button>
         </div>
         <div className="history-label">RUN HISTORY <b>{runs.length}</b></div>
@@ -968,6 +976,7 @@ function computeRunReport(events: AgentEvent[], summary?: Summary): RunReport {
     total_steps: totalSteps,
     routed_models: Array.from(routedModelsSet),
     model_stats: Array.from(modelStatsMap.values()),
+    grade: summary?.grade,
   }
 }
 
@@ -993,6 +1002,11 @@ function ExecutionReportCard({ report, status }: { report: RunReport; status?: s
       </div>
 
       <div className="report-metrics-grid">
+        <div className="metric-card highlight-score">
+          <small>SCORE</small>
+          <strong>{scoreValue(report.grade)}</strong>
+          <span className="metric-sub">{report.grade ? `${report.grade.grading_type.replace('_', ' ')} evaluation` : 'Grading unavailable'}</span>
+        </div>
         <div className="metric-card highlight-cost">
           <small>TOTAL COST</small>
           <strong>{money(report.total_cost)}</strong>
@@ -1070,6 +1084,7 @@ function ExecutionReportCard({ report, status }: { report: RunReport; status?: s
 
 function RunView({ run, selected, prompt, steps, events, summary }: { run: Run | null; selected: Case | null; prompt: string; steps: Step[]; events: AgentEvent[]; summary?: Summary }) {
   const terminal = run?.status === 'completed' || run?.status === 'failed'
+  const grading = !terminal && events.some(event => event.event === 'grading_started')
   const report = useMemo(() => computeRunReport(events, summary), [events, summary])
 
   return <>
@@ -1079,7 +1094,7 @@ function RunView({ run, selected, prompt, steps, events, summary }: { run: Run |
         <h2>{selected?.name || run?.case_id}</h2>
         <p>{run?.run_id}</p>
       </div>
-      <div className={`run-status ${run?.status}`}><i/>{run?.status === 'running' ? 'Running · waiting for next step' : run?.status}</div>
+      <div className={`run-status ${run?.status}`}><i/>{grading ? 'Grading · PinchBench is evaluating the result' : run?.status === 'running' ? 'Running · waiting for next step' : run?.status}</div>
     </header>
     {terminal && <ExecutionReportCard report={report} status={run?.status} />}
     <div className="chat">
@@ -1091,16 +1106,44 @@ function RunView({ run, selected, prompt, steps, events, summary }: { run: Run |
         </div>
       </article>
       {steps.map(step => <StepCard key={step.index} step={step}/>)}
+      {(grading || summary?.grade) && <GradingCard grade={summary?.grade} pending={grading} />}
       {!terminal && <article className="waiting">
         <span className="pulse"/>
         <div>
-          <b>{events.some(event => event.event === 'model_call_started') ? 'Model provider is working on the next Agent step' : 'Preparing the next Router decision'}</b>
-          <small>The run stays live. A new step appears as soon as the model or tool returns.</small>
+          <b>{grading ? 'PinchBench is grading this run' : events.some(event => event.event === 'model_call_started') ? 'Model provider is working on the next Agent step' : 'Preparing the next Router decision'}</b>
+          <small>{grading ? 'The completed trace and workspace are being evaluated before the final score is saved.' : 'The run stays live. A new step appears as soon as the model or tool returns.'}</small>
         </div>
       </article>}
       {terminal && <SummaryCard run={run} summary={summary} steps={steps}/>}
     </div>
   </>
+}
+
+function GradingCard({ grade, pending }: { grade?: Grade; pending: boolean }) {
+  const breakdown = Object.entries(grade?.breakdown || {})
+  return <article className={`grading-card ${pending ? 'pending' : ''}`}>
+    <div className="grading-card-head">
+      <span className={`grading-icon ${pending ? 'pending' : ''}`}>{pending ? '◌' : '✓'}</span>
+      <div>
+        <small>PINCHBENCH EVALUATION</small>
+        <h3>{pending ? 'Scoring the completed run…' : `${scoreValue(grade)} score`}</h3>
+      </div>
+      {grade && <span className="grading-type">{grade.grading_type.replace('_', ' ')}</span>}
+    </div>
+    {pending ? (
+      <p>The trace and workspace are now being evaluated by PinchBench.</p>
+    ) : (
+      <>
+        {breakdown.length > 0 && <div className="grade-breakdown">
+          {breakdown.map(([criterion, score]) => <div key={criterion}>
+            <span>{criterion.replace(/[._]/g, ' ')}</span>
+            <b>{score.toFixed(2)} / 1.00</b>
+          </div>)}
+        </div>}
+        {grade?.notes && <p className="grade-notes">{grade.notes}</p>}
+      </>
+    )}
+  </article>
 }
 
 function StepCard({ step }: { step: Step }) {
@@ -1155,6 +1198,7 @@ function SummaryCard({ run, summary, steps }: { run: Run | null; summary?: Summa
       <h3>{run?.status === 'completed' ? 'Task completed' : 'Run failed'}</h3>
       <CompletionBody run={run} steps={steps}/>
       <div className="summary-stats">
+        <span><b>{scoreValue(summary?.grade)}</b> score</span>
         <span><b>{summary?.steps ?? steps.length}</b> model steps</span>
         <span><b>{money(summary?.router_estimated_cost)}</b> estimated route cost</span>
         <span><b>{summary?.tools?.join(', ') || 'No tools'}</b> tools used</span>
@@ -1268,18 +1312,19 @@ function CompareModal({
 }
 
 function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
+  const [focusedRunId, setFocusedRunId] = useState<string | null>(null)
   const axes = [
     { key: 'speed', label: 'Speed' },
     { key: 'economy', label: 'Economy' },
     { key: 'throughput', label: 'Throughput' },
     { key: 'concision', label: 'Concision' },
-    { key: 'reliability', label: 'Reliability' },
+    { key: 'score', label: 'Score' },
   ]
 
   const colorPalette = [
     { stroke: '#5ce6d0', fill: 'rgba(92, 230, 208, 0.22)' },
-    { stroke: '#ffd766', fill: 'rgba(255, 215, 102, 0.22)' },
-    { stroke: '#8bf069', fill: 'rgba(139, 240, 105, 0.22)' },
+    { stroke: '#9bdc78', fill: 'rgba(155, 220, 120, 0.20)' },
+    { stroke: '#a8a1ff', fill: 'rgba(168, 161, 255, 0.18)' },
   ]
 
   const runMetrics = useMemo(() => {
@@ -1298,7 +1343,7 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
         rawEconomy: 0.001 / Math.max(0.00001, cost),
         rawThroughput: output / Math.max(0.1, latency / 1000),
         rawConcision: 1 / Math.max(1, steps),
-        rawReliability: run.status === 'completed' ? 1.0 : 0.35,
+        pinchScore: summary?.grade ? summary.grade.score / Math.max(summary.grade.max_score || 1, 1) : 0,
       }
     })
   }, [runs])
@@ -1310,8 +1355,6 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
     const maxEconomy = Math.max(...runMetrics.map((r) => r.rawEconomy)) || 1
     const maxThroughput = Math.max(...runMetrics.map((r) => r.rawThroughput)) || 1
     const maxConcision = Math.max(...runMetrics.map((r) => r.rawConcision)) || 1
-    const maxReliability = Math.max(...runMetrics.map((r) => r.rawReliability)) || 1
-
     return runMetrics.map((m) => {
       return {
         ...m,
@@ -1320,7 +1363,7 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
           Math.min(1, Math.max(0.25, m.rawEconomy / maxEconomy)),
           Math.min(1, Math.max(0.25, m.rawThroughput / maxThroughput)),
           Math.min(1, Math.max(0.25, m.rawConcision / maxConcision)),
-          Math.min(1, Math.max(0.25, m.rawReliability / maxReliability)),
+          Math.min(1, Math.max(0, m.pinchScore)),
         ],
       }
     })
@@ -1330,7 +1373,7 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
   const radius = 85
 
   const getCoordinates = (index: number, value: number) => {
-    const angle = (index * 2 * Math.PI) / 5 - Math.PI / 2
+    const angle = (index * 2 * Math.PI) / axes.length - Math.PI / 2
     const x = center + radius * value * Math.cos(angle)
     const y = center + radius * value * Math.sin(angle)
     return { x, y }
@@ -1339,10 +1382,11 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
   const gridLevels = [0.25, 0.5, 0.75, 1.0]
 
   return (
-    <div className="radar-chart-card">
+    <div className="radar-chart-card" onMouseLeave={() => setFocusedRunId(null)}>
       <div className="radar-chart-header">
         <span className="kicker">CAPABILITY BENCHMARK RADAR</span>
         <h4>Model Performance Profile</h4>
+        <small>Hover or click a legend item to focus one run</small>
       </div>
       <div className="radar-svg-container">
         <svg viewBox="0 0 280 280" className="radar-svg">
@@ -1404,7 +1448,11 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
               .join(' ')
 
             return (
-              <g key={d.run.run_id}>
+              <g
+                key={d.run.run_id}
+                className={`radar-series ${focusedRunId && focusedRunId !== d.run.run_id ? 'dimmed' : ''}`}
+                onMouseEnter={() => setFocusedRunId(d.run.run_id)}
+              >
                 <polygon
                   points={polygonPoints}
                   fill={palette.fill}
@@ -1426,11 +1474,18 @@ function RadarChart({ runs, cases }: { runs: Run[]; cases: Case[] }) {
           const palette = colorPalette[rIdx % colorPalette.length]
           const caseName = cases.find((c) => c.id === d.run.case_id)?.name || d.run.case_id
           return (
-            <div key={d.run.run_id} className="legend-item">
+            <button
+              key={d.run.run_id}
+              type="button"
+              className={`legend-item ${focusedRunId === d.run.run_id ? 'focused' : ''}`}
+              onMouseEnter={() => setFocusedRunId(d.run.run_id)}
+              onFocus={() => setFocusedRunId(d.run.run_id)}
+              onClick={() => setFocusedRunId(current => current === d.run.run_id ? null : d.run.run_id)}
+            >
               <span className="legend-dot" style={{ background: palette.stroke }} />
               <span className={`strategy-badge ${d.strategy.colorClass}`}>{d.strategy.label}</span>
               <span className="legend-run-id">{caseName}</span>
-            </div>
+            </button>
           )
         })}
       </div>
@@ -1533,7 +1588,6 @@ type H2HRow = {
   a: number
   b: number
   format: (v: number) => string
-  lowerIsBetter?: boolean
 }
 
 function HeadToHeadBars({ runs, cases }: { runs: Run[]; cases: Case[] }) {
@@ -1545,32 +1599,34 @@ function HeadToHeadBars({ runs, cases }: { runs: Run[]; cases: Case[] }) {
 
   const rows: H2HRow[] = [
     {
+      label: 'Score',
+      a: a.summary?.grade ? a.summary.grade.score / Math.max(a.summary.grade.max_score || 1, 1) : 0,
+      b: b.summary?.grade ? b.summary.grade.score / Math.max(b.summary.grade.max_score || 1, 1) : 0,
+      format: (v) => `${v.toFixed(2)} / 1.00`,
+    },
+    {
       label: 'Total Cost',
       a: a.summary?.actual_cost ?? 0,
       b: b.summary?.actual_cost ?? 0,
       format: money,
-      lowerIsBetter: true,
     },
     {
       label: 'Total Latency',
       a: a.summary?.total_latency_ms ?? 0,
       b: b.summary?.total_latency_ms ?? 0,
       format: (v) => formatLatency(v),
-      lowerIsBetter: true,
     },
     {
       label: 'Steps',
       a: a.summary?.steps ?? 0,
       b: b.summary?.steps ?? 0,
       format: (v) => `${v}`,
-      lowerIsBetter: true,
     },
     {
       label: 'Input Tokens',
       a: a.summary?.total_input_tokens ?? 0,
       b: b.summary?.total_input_tokens ?? 0,
       format: (v) => formatTokens(v),
-      lowerIsBetter: true,
     },
     {
       label: 'Output Tokens',
@@ -1602,26 +1658,24 @@ function HeadToHeadBars({ runs, cases }: { runs: Run[]; cases: Case[] }) {
       </div>
 
       {/* Rows */}
-      {rows.map(({ label, a: va, b: vb, format, lowerIsBetter }) => {
+      {rows.map(({ label, a: va, b: vb, format }) => {
         const total = va + vb
         const pctA = total === 0 ? 50 : Math.round((va / total) * 100)
         const pctB = 100 - pctA
-        // "winner" is left bar when lowerIsBetter and va < vb, or !lowerIsBetter and va > vb
-        const aWins = lowerIsBetter ? va <= vb : va >= vb
         return (
           <div key={label} className="h2h-row">
             <div className="h2h-values">
-              <span className={`h2h-val-a ${aWins && va !== vb ? 'h2h-winner' : ''}`}>{format(va)}</span>
+              <span className="h2h-val-a">{format(va)}</span>
               <span className="h2h-metric-label">{label}</span>
-              <span className={`h2h-val-b ${!aWins && va !== vb ? 'h2h-winner' : ''}`}>{format(vb)}</span>
+              <span className="h2h-val-b">{format(vb)}</span>
             </div>
             <div className="h2h-bar-track">
               <div
-                className={`h2h-bar h2h-bar-a ${aWins && va !== vb ? 'h2h-bar-win' : 'h2h-bar-lose'}`}
+                className="h2h-bar h2h-bar-a"
                 style={{ width: `${pctA}%` }}
               />
               <div
-                className={`h2h-bar h2h-bar-b ${!aWins && va !== vb ? 'h2h-bar-win' : 'h2h-bar-lose'}`}
+                className="h2h-bar h2h-bar-b"
                 style={{ width: `${pctB}%` }}
               />
             </div>
@@ -1629,6 +1683,54 @@ function HeadToHeadBars({ runs, cases }: { runs: Run[]; cases: Case[] }) {
         )
       })}
     </div>
+  )
+}
+
+function ScoreComparison({ runs, cases }: { runs: Run[]; cases: Case[] }) {
+  const criteria = Array.from(new Set(runs.flatMap((run) => Object.keys(run.summary?.grade?.breakdown || {}))))
+
+  return (
+    <section className={`score-comparison-card runs-${runs.length}`} aria-label="PinchBench score comparison">
+      <header className="score-comparison-header">
+        <div>
+          <span className="kicker">PINCHBENCH EVALUATION</span>
+          <h3>Score Comparison</h3>
+        </div>
+        <p>Scores and judge feedback aligned across selected runs.</p>
+      </header>
+      <div className="score-comparison-grid" style={{ gridTemplateColumns: `minmax(160px, .72fr) repeat(${runs.length}, minmax(0, 1fr))` }}>
+        <div className="score-grid-heading">METRIC</div>
+        {runs.map((run) => {
+          const strategy = getRunStrategy(run)
+          const caseName = cases.find((c) => c.id === run.case_id)?.name || run.case_id
+          return <div className="score-grid-run" key={run.run_id}>
+            <span className={`strategy-badge ${strategy.colorClass}`}>{strategy.label}</span>
+            <strong>{caseName}</strong>
+          </div>
+        })}
+
+        <div className="score-grid-label">Score</div>
+        {runs.map((run) => <div className="score-grid-value score-total" key={run.run_id}>{scoreValue(run.summary?.grade)}</div>)}
+
+        <div className="score-grid-label">Judge</div>
+        {runs.map((run) => <div className="score-grid-value score-type" key={run.run_id}>
+          {run.summary?.grade?.grading_type.replace('_', ' ') || 'Unavailable'}
+        </div>)}
+
+        {criteria.map((criterion) => <Fragment key={criterion}>
+          <div className="score-grid-label">{criterion.replace(/[._]/g, ' ')}</div>
+          {runs.map((run) => {
+            const value = run.summary?.grade?.breakdown?.[criterion]
+            return <div className="score-grid-value" key={`${run.run_id}-${criterion}`}>{value === undefined ? '—' : `${value.toFixed(2)} / 1.00`}</div>
+          })}
+        </Fragment>)}
+
+        <div className="score-grid-label score-notes-label">Judge notes</div>
+        {runs.map((run) => <div className="score-grid-value score-notes" key={`${run.run_id}-notes`}>
+          {run.summary?.grade?.notes || 'No score has been saved for this run.'}
+        </div>)}
+      </div>
+    </section>
   )
 }
 
@@ -1714,6 +1816,12 @@ function ComparisonView({
                   ))}
                 </tr>
                 <tr>
+                  <td className="metric-label">Score</td>
+                  {compareRuns.map((r) => (
+                    <td key={r.run_id} className="score-highlight">{scoreValue(r.summary?.grade)}</td>
+                  ))}
+                </tr>
+                <tr>
                   <td className="metric-label">Total Cost</td>
                   {compareRuns.map((r) => (
                     <td key={r.run_id} className="cost-highlight">
@@ -1757,6 +1865,8 @@ function ComparisonView({
           )}
         </div>
       </section>
+
+      <ScoreComparison runs={compareRuns} cases={cases} />
 
       {/* Part 2: Bottom Side-by-Side Execution Trace */}
       <section className="comparison-bottom-section">

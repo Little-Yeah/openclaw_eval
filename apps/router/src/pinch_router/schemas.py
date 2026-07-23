@@ -43,7 +43,22 @@ class ExecutionProfile(BaseModel):
     timeout_seconds: float = Field(default=120, gt=0)
 
 
+class JudgeConfig(BaseModel):
+    """Provider details for PinchBench's post-run LLM judge."""
+
+    name: str = "pinchbench-judge"
+    api_type: Literal["openai", "anthropic"] = "openai"
+    base_url: str
+    api_key: str = ""
+    model: str = ""
+    execution_profile: str | None = None
+    max_tokens: int = Field(default=2048, gt=0)
+    timeout: float = Field(default=180, gt=0)
+    anthropic_version: str = "2023-06-01"
+
+
 class RouterConfig(BaseModel):
     default_candidates: list[str]
     models: list[ModelConfig]
     execution_profiles: dict[str, ExecutionProfile]
+    judge: JudgeConfig | None = None

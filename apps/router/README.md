@@ -35,6 +35,12 @@ Then run:
 uv run pinch-router execute --trace examples/trace.json
 ```
 
+The same local `models.json` can contain an optional `judge` block used by the
+web demo after each PinchBench run. Set its `base_url`, `api_type`, `api_key`,
+and `model` as shown in `models.example.json`. This supports private
+OpenAI-compatible gateways and Anthropic-compatible providers such as MiniMax;
+it does not use OpenRouter.
+
 `route` loads the model only when it is needed. `context` is dependency-free and
 can be used to inspect the bounded routing view before model assets are staged:
 
